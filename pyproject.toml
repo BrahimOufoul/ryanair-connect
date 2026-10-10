@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ryanair-connect"
+dynamic = ["version"]
+description = "Find cheap self-transfer itineraries across the Ryanair network."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Brahim Oufoul" }]
+requires-python = ">=3.9"
+dependencies = []
+keywords = ["ryanair", "flights", "self-transfer", "cheap-flights", "cli"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Environment :: Console",
+]
+
+[project.urls]
+Homepage = "https://github.com/BrahimOufoul/ryanair-connect"
+
+[project.scripts]
+ryanair-connect = "ryanair_connect.cli:main"
+
+[tool.setuptools]
+packages = ["ryanair_connect"]
+
+[tool.setuptools.dynamic]
+version = { attr = "ryanair_connect.__version__" }
+
+[tool.ruff]
+line-length = 130
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "PL", "RUF"]
+ignore = ["PLR0912", "PLR0913", "PLR0915", "PLR0917", "PLR2004", "PLW0603"]

@@ -1,0 +1,17 @@
+# Response cache (when pointed inside the repo)
+.ryanair_cache/
+
+# Result exports
+*.csv
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+
+# macOS
+.DS_Store
+
