@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0 — 2026-10-10
+
+- Every scheduled flight is now considered, not only the cheapest flight of each day. Flights come from the published timetable and are priced on demand through a lazy best-first search, so only flights that could make the top results are looked up.
+- All one-stop connections are always checked; `--candidates` now only limits two-stop paths.
+
 ## 0.1.0 — 2026-10-10
 
 Initial release.

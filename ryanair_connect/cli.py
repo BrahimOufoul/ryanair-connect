@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 
 from . import __version__, api
-from .search import candidate_paths, cheapest_per_day, itineraries_for, parse_places
+from .search import candidate_paths, itineraries_for, parse_places, resolve
 
 EXAMPLES = """examples:
   # every Ryanair airport in Germany -> Barcelona, up to 1 stop
@@ -48,7 +48,8 @@ def build_parser():
     ap.add_argument("--arrive-by", help='latest arrival, local time at destination, e.g. "2026-10-16 14:10"')
     ap.add_argument("--depart-after", help='earliest departure, local time at origin, e.g. "2026-10-15 16:00"')
     ap.add_argument("--max-price", type=float, help="only show itineraries up to this total price (EUR)")
-    ap.add_argument("--candidates", type=int, default=80, help="connecting routes checked in detail (default: 80)")
+    ap.add_argument("--candidates", type=int, default=80,
+                    help="two-stop routes checked in detail; all one-stop routes are always checked (default: 80)")
     ap.add_argument("--top", type=int, default=20, help="number of results to show (default: 20)")
     ap.add_argument("--csv", help="also write results to this CSV file")
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -107,16 +108,18 @@ def main(argv=None):
 
     with ThreadPoolExecutor(max_workers=6) as pool:
         paths = candidate_paths(origins, dests, args.max_stops, d_from, d_to_ext, args.candidates, pool)
-        print(f"Checking real daily fares and times on {len(paths)} routes ...", flush=True)
+        print(f"Checking every scheduled flight on {len(paths)} routes ...", flush=True)
         found = []
+
         def check(path):
             return itineraries_for(path, d_from, d_to, d_to_ext, min_lay, max_lay, arrive_by, depart_after)
 
         for its in pool.map(check, paths):
             found.extend(its)
 
-    ranked = cheapest_per_day(found, args.max_price)[: args.top]
-    direct = next(iter(cheapest_per_day([it for it in found if len(it) == 1])), None)
+    print(f"Pricing the best of {len(found)} possible itineraries ...", flush=True)
+    ranked = resolve(found, args.top, args.max_price)
+    direct = next(iter(resolve([it for it in found if len(it) == 1], 1)), None)
     if not ranked:
         print("\nNo matching itinerary found. Try a wider date range, --max-stops 2 or a larger --max-layover.")
         return

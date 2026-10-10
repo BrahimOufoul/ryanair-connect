@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 
 from ryanair_connect import api
-from ryanair_connect.search import candidate_paths, cheapest_per_day, parse_places, stitch
+from ryanair_connect.search import candidate_paths, parse_places, resolve, stitch
 
 api.AIRPORTS.update({
     "CGN": {"name": "Cologne", "country": "DE", "tz": "Europe/Berlin"},
@@ -60,13 +60,32 @@ class StitchTest(unittest.TestCase):
     def test_empty_leg(self):
         self.assertEqual(stitch([self.leg1, []], 3 * H, 30 * H), [])
 
-    def test_cheapest_per_day_ranks_by_price(self):
+    def test_resolve_ranks_by_price(self):
         cheap = (fl("FKB", "PMI", "2026-10-14T18:00:00", "2026-10-14T20:00:00", 10),
                  fl("PMI", "MRS", "2026-10-15T05:50:00", "2026-10-15T07:10:00", 18))
         pricey = stitch([self.leg1, self.leg2], 3 * H, 30 * H)[0]
-        ranked = cheapest_per_day([pricey, cheap])
+        ranked = resolve([pricey, cheap], top=5, price=lambda f: self.fail("nothing to price"))
         self.assertEqual([round(t, 2) for t, _ in ranked], [28, 72])
-        self.assertEqual(cheapest_per_day([pricey, cheap], max_price=50)[0][0], 28)
+        self.assertEqual(len(resolve([pricey, cheap], top=5, max_price=50)), 1)
+
+    def test_resolve_prices_lower_bounds_lazily(self):
+        leg1 = self.leg1[0]
+        later = api.Flight("STN", "MRS", self.leg2[1].dep, self.leg2[1].arr, price=30, exact=False)  # floor 30, real 90
+        other = (fl("CGN", "PMI", "2026-10-15T18:00:00", "2026-10-15T20:00:00", 40),
+                 fl("PMI", "MRS", "2026-10-16T05:50:00", "2026-10-16T07:10:00", 20))
+        priced = []
+
+        def price(f):
+            priced.append(f)
+            return 90
+
+        ranked = resolve([(leg1, later), other], top=1, price=price)
+        self.assertEqual(ranked[0][0], 60)  # 20 + 30 floor looked cheaper, but really costs 110
+        self.assertEqual(len(priced), 1)
+
+    def test_resolve_drops_sold_out(self):
+        later = api.Flight("STN", "MRS", self.leg2[1].dep, self.leg2[1].arr, price=30, exact=False)
+        self.assertEqual(resolve([(self.leg1[0], later)], top=1, price=lambda f: None), [])
 
 
 class GraphTest(unittest.TestCase):
@@ -86,8 +105,8 @@ class GraphTest(unittest.TestCase):
             paths = candidate_paths({"CGN"}, {"MRS"}, 2, date(2026, 10, 1), date(2026, 10, 2), 10, pool,
                                     cheapest=lambda a, *_: network.get(a, {}),
                                     routes=lambda a: set(network.get(a, {})))
-        self.assertEqual(paths[0], ("CGN", "MRS"))  # direct first
-        self.assertEqual(paths[1], ("CGN", "STN", "MRS"))  # then cheapest connection
+        # every direct and one-stop path comes first, cheapest estimate first; two-stop paths after
+        self.assertEqual(paths[:3], [("CGN", "STN", "MRS"), ("CGN", "PMI", "MRS"), ("CGN", "MRS")])
         self.assertIn(("CGN", "STN", "RAK", "MRS"), paths)
 
 

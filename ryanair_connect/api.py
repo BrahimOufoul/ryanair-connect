@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36"
@@ -77,7 +77,8 @@ class Flight:
     dest: str
     dep: datetime  # UTC
     arr: datetime  # UTC
-    price: float
+    price: float  # exact fare, or the day's cheapest fare on the route as a lower bound
+    exact: bool = True
 
     def local(self, which):
         code = self.orig if which == "dep" else self.dest
@@ -132,28 +133,89 @@ def cheapest_from(origin, d_from, d_to):
     return _cheapest[key]
 
 
-_fares = {}
-
-
-def day_fares(o, d, d_from, d_to):
-    """Cheapest flight per day (with times) on route o -> d."""
-    key = (o, d, d_from, d_to)
-    if key in _fares:
-        return _fares[key]
-    flights = []
+def _months(d_from, d_to):
     m = date(d_from.year, d_from.month, 1)
     while m <= d_to:
+        yield m
+        m = date(m.year + (m.month == 12), m.month % 12 + 1, 1)
+
+
+def cheapest_per_day(o, d, d_from, d_to):
+    """{day: (local departure 'HH:MM', price)} for days with seats left on route o -> d."""
+    out = {}
+    for m in _months(d_from, d_to):
         url = (f"https://www.ryanair.com/api/farfnd/v4/oneWayFares/{o}/{d}/cheapestPerDay"
                f"?outboundMonthOfDate={m.isoformat()}&currency={CURRENCY}")
-        data = get_json(url) or {}
-        for f in (data.get("outbound") or {}).get("fares", []):
+        for f in ((get_json(url) or {}).get("outbound") or {}).get("fares", []):
             if f.get("soldOut") or f.get("unavailable") or not f.get("price") or not f.get("departureDate"):
                 continue
-            if d_from <= date.fromisoformat(f["day"]) <= d_to:
-                flights.append(Flight(o, d, to_utc(f["departureDate"], o), to_utc(f["arrivalDate"], d), f["price"]["value"]))
-        m = date(m.year + (m.month == 12), m.month % 12 + 1, 1)
-    _fares[key] = flights
+            day = date.fromisoformat(f["day"])
+            if d_from <= day <= d_to:
+                out[day] = (f["departureDate"], f["arrivalDate"], f["price"]["value"])
+    return out
+
+
+def timetable(o, d, d_from, d_to):
+    """{day: [(departure 'HH:MM', arrival 'HH:MM'), ...]}: every scheduled flight, not just the cheapest."""
+    out = {}
+    for m in _months(d_from, d_to):
+        url = f"https://www.ryanair.com/api/timtbl/3/schedules/{o}/{d}/years/{m.year}/months/{m.month}"
+        for day in (get_json(url, ttl=86400) or {}).get("days", []):
+            dt = date(m.year, m.month, day["day"])
+            if d_from <= dt <= d_to:
+                out[dt] = [(f["departureTime"], f["arrivalTime"]) for f in day.get("flights", [])]
+    return out
+
+
+_flights = {}
+
+
+def day_flights(o, d, d_from, d_to):
+    """Every flight on route o -> d in the date range.
+
+    The fare feed only prices the cheapest flight of each day. Every other
+    scheduled flight that day costs at least that much, so it gets the day's
+    cheapest fare as a lower bound (`exact=False`) and is priced on demand.
+    """
+    key = (o, d, d_from, d_to)
+    if key in _flights:
+        return _flights[key]
+    fares, sched = cheapest_per_day(o, d, d_from, d_to), timetable(o, d, d_from, d_to)
+    flights = []
+    for day, (dep_iso, arr_iso, price) in sorted(fares.items()):
+        cheapest = Flight(o, d, to_utc(dep_iso, o), to_utc(arr_iso, d), price)
+        flights.append(cheapest)
+        for dep_hm, arr_hm in sched.get(day, []):
+            dep_local = datetime.combine(day, datetime.strptime(dep_hm, "%H:%M").time())
+            if dep_local.isoformat(timespec="minutes") == dep_iso[:16]:
+                continue
+            arr_local = datetime.combine(day, datetime.strptime(arr_hm, "%H:%M").time())
+            dep, arr = to_utc(dep_local.isoformat(), o), to_utc(arr_local.isoformat(), d)
+            if arr <= dep:  # lands after midnight
+                arr = to_utc((arr_local + timedelta(days=1)).isoformat(), d)
+            flights.append(Flight(o, d, dep, arr, price, exact=False))
+    _flights[key] = flights
     return flights
+
+
+_prices = {}
+
+
+def price_flight(f):
+    """Exact fare of one specific flight, or None if it is sold out."""
+    key = (f.orig, f.dest, f.dep)
+    if key not in _prices:
+        dl = f.local("dep")
+        url = ("https://www.ryanair.com/api/farfnd/v4/oneWayFares"
+               f"?departureAirportIataCode={f.orig}&arrivalAirportIataCode={f.dest}"
+               f"&outboundDepartureDateFrom={dl.date()}&outboundDepartureDateTo={dl.date()}"
+               f"&outboundDepartureTimeFrom={dl:%H:%M}&outboundDepartureTimeTo={dl:%H:%M}"
+               f"&currency={CURRENCY}&market=en-gb")
+        fares = (get_json(url) or {}).get("fares", [])
+        wanted = dl.strftime("%Y-%m-%dT%H:%M")
+        match = [x["outbound"]["price"]["value"] for x in fares if x["outbound"]["departureDate"][:16] == wanted]
+        _prices[key] = match[0] if match else None
+    return _prices[key]
 
 
 def booking_link(f):

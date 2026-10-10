@@ -9,7 +9,7 @@
 
 Ryanair sells point-to-point tickets. If the direct flight is expensive, the website stops there. It won't tell you that a second Ryanair flight through another city can cut the price in half. And if there is no direct route at all, it shows you nothing.
 
-`ryanair-connect` searches the route *graph* instead of the route list. It checks every origin airport in a country, every possible hub (up to two stops) and every day in your date range. Then it only joins flights whose layover is realistic in real time zones, and ranks the result by total price.
+`ryanair-connect` searches the route *graph* instead of the route list. It checks every origin airport in a country, every possible hub, every day in your date range and every scheduled flight on each of those days. Then it only joins flights whose layover is realistic in real time zones, and ranks the result by total price.
 
 ```
 $ ryanair-connect --from CGN --to LPA --date-from 2026-12-18 --date-to 2026-12-21 --max-layover 12
@@ -93,9 +93,9 @@ ryanair-connect --from BER --to SVQ \
 ## How it works
 
 1. **Load the network.** It fetches every active Ryanair airport with its IANA time zone, plus the routes from each airport.
-2. **Find candidate paths cheaply.** One "cheapest fare to everywhere" request per airport gives a lower-bound price for every leg. From these it builds every `A → X → B` and `A → X → Y → B` path and keeps the most promising ones. This keeps the number of requests small.
-3. **Check real flights.** For each candidate it downloads the actual daily fares with departure and arrival times. Ryanair returns local wall-clock times without an offset, so every time is converted to UTC through the airport's time zone before layovers are compared. Otherwise a Berlin → London → Seville connection would be off by an hour.
-4. **Rank.** It keeps the cheapest itinerary per route and day, sorted by total price, then by travel time.
+2. **Find candidate paths cheaply.** One "cheapest fare to everywhere" request per airport gives a lower-bound price for every leg. From these it builds every `A → X → B` and `A → X → Y → B` path. Every direct and one-stop path is checked. Two-stop paths run into the thousands, so only the most promising ones by estimate are checked (`--candidates`).
+3. **Check every flight.** For each path it reads the published timetable, which lists every flight, and the daily fare calendar, which only prices the cheapest flight of each day. Every other flight that day must cost at least as much, so that fare becomes its lower bound. Ryanair returns local wall-clock times without an offset, so every time is converted to UTC through the airport's time zone before layovers are compared. Otherwise a Berlin → London → Seville connection would be off by an hour.
+4. **Price lazily, rank exactly.** Itineraries go on a priority queue by lower-bound total. The cheapest one has its unknown fares looked up and goes back on the queue with its real price. When an itinerary comes off the queue fully priced, nothing left can beat it. A search that could involve hundreds of fare lookups typically needs a handful.
 
 Responses are cached on disk for 3 hours in `~/.cache/ryanair-connect`, which you can override with `RYANAIR_CONNECT_CACHE`. A repeated search costs Ryanair almost nothing.
 
@@ -110,7 +110,7 @@ tests/         offline unit tests, run in CI on Python 3.9–3.13
 ## Limitations
 
 - **Ryanair only.** A connection exists only if Ryanair flies both legs.
-- **One flight per route per day.** The fare feed only returns the cheapest flight each day, so a slightly pricier flight at a better time can be missed.
+- **Two-stop search is pruned.** All one-stop connections are checked. With two stops, only the `--candidates` most promising paths are (default 80).
 - **Same-airport connections only.** Changing between two airports in one city, such as Stansted → Luton, is not considered.
 - **Base fares only.** Prices are for one adult with a small under-seat bag. Every leg is its own booking, so checked bags are paid, and re-checked, per flight.
 - **Prices move.** Fares are cached for hours and can change in minutes. Ryanair's own page is always the truth.
